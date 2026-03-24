@@ -297,6 +297,7 @@ if st.session_state.search_result:
     # タブ3: 分析レポート
     with tab3:
         st.subheader("📝 過去実績分析レポート")
+        st.warning("⚠️ 現在AIで作成したモックアップにつき、内容に齟齬がある場合がありますのでご注意ください")
         st.markdown(result.insights)
 
     # タブ4: ダウンロード
