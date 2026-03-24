@@ -24,9 +24,20 @@ from anthropic import Anthropic
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
-# Streamlit Secrets対応
+# グローバル変数（デフォルト値）
+ANTHROPIC_API_KEY = None
+SERVICE_ACCOUNT_KEY = None
+SERVICE_ACCOUNT_INFO = None
+PROJECT_ID = 'jp-sales-enablement'
+
 def _get_config():
-    """認証情報を取得"""
+    """認証情報を取得（遅延評価）"""
+    global ANTHROPIC_API_KEY, SERVICE_ACCOUNT_KEY, SERVICE_ACCOUNT_INFO, PROJECT_ID
+
+    # すでに設定済みなら再取得しない
+    if ANTHROPIC_API_KEY is not None:
+        return ANTHROPIC_API_KEY, SERVICE_ACCOUNT_KEY, SERVICE_ACCOUNT_INFO, PROJECT_ID
+
     try:
         import streamlit as st
         # Streamlit環境での実行
@@ -44,7 +55,10 @@ def _get_config():
             else:
                 raise ValueError("Secrets に service_account または service_account_base64 が設定されていません")
 
-            return api_key, None, sa_info, 'jp-sales-enablement'
+            ANTHROPIC_API_KEY = api_key
+            SERVICE_ACCOUNT_KEY = None
+            SERVICE_ACCOUNT_INFO = sa_info
+            return api_key, None, sa_info, PROJECT_ID
     except (ImportError, AttributeError):
         pass
 
@@ -59,9 +73,10 @@ def _get_config():
     if not os.path.exists(sa_key):
         raise ValueError(f"サービスアカウントキーが見つかりません: {sa_key}")
 
-    return api_key, sa_key, None, 'jp-sales-enablement'
-
-ANTHROPIC_API_KEY, SERVICE_ACCOUNT_KEY, SERVICE_ACCOUNT_INFO, PROJECT_ID = _get_config()
+    ANTHROPIC_API_KEY = api_key
+    SERVICE_ACCOUNT_KEY = sa_key
+    SERVICE_ACCOUNT_INFO = None
+    return api_key, sa_key, None, PROJECT_ID
 
 # CV地点の定義
 CV_POINTS = {
@@ -91,23 +106,36 @@ class PerformanceSearchResult:
 class PastPerformanceAgentV3:
     """過去実績検索Agent v3"""
 
-    def __init__(self, anthropic_api_key: str = ANTHROPIC_API_KEY,
-                 bq_project_id: str = PROJECT_ID,
-                 service_account_key: str = SERVICE_ACCOUNT_KEY):
+    def __init__(self, anthropic_api_key: str = None,
+                 bq_project_id: str = None,
+                 service_account_key: str = None):
         """初期化"""
         print("=" * 80)
         print("🔍 過去実績検索Agent v3 初期化中...")
         print("=" * 80)
 
+        # 認証情報を取得（遅延評価）
+        api_key, sa_key, sa_info, project_id = _get_config()
+
+        # 引数が指定されていない場合はデフォルト値を使用
+        if anthropic_api_key is None:
+            anthropic_api_key = api_key
+        if bq_project_id is None:
+            bq_project_id = project_id
+        if service_account_key is None:
+            service_account_key = sa_key
+
         # Anthropic Claude初期化
+        if not anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY が設定されていません")
         self.claude = Anthropic(api_key=anthropic_api_key)
         print("✅ Claude Haiku 4.5 接続完了")
 
         # BigQuery初期化
-        if SERVICE_ACCOUNT_INFO:
+        if sa_info:
             # Streamlit Cloud環境: dict から認証情報を作成
             credentials = service_account.Credentials.from_service_account_info(
-                SERVICE_ACCOUNT_INFO,
+                sa_info,
                 scopes=["https://www.googleapis.com/auth/bigquery"]
             )
         elif service_account_key:
