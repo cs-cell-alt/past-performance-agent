@@ -25,43 +25,43 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 
 # Streamlit Secrets対応
-try:
-    import streamlit as st
-    # Streamlit環境での実行
-    if hasattr(st, 'secrets'):
-        ANTHROPIC_API_KEY = st.secrets.get('ANTHROPIC_API_KEY', os.getenv('ANTHROPIC_API_KEY'))
+def _get_config():
+    """認証情報を取得"""
+    try:
+        import streamlit as st
+        # Streamlit環境での実行
+        if hasattr(st, 'secrets') and len(st.secrets) > 0:
+            api_key = st.secrets.get('ANTHROPIC_API_KEY')
+            if not api_key:
+                raise ValueError("Secrets に ANTHROPIC_API_KEY が設定されていません")
 
-        # サービスアカウント認証情報の取得
-        if "service_account" in st.secrets:
-            SERVICE_ACCOUNT_INFO = st.secrets["service_account"]
-        elif "service_account_base64" in st.secrets:
-            decoded = base64.b64decode(st.secrets["service_account_base64"])
-            SERVICE_ACCOUNT_INFO = json.loads(decoded)
-        else:
-            SERVICE_ACCOUNT_INFO = None
+            # サービスアカウント認証情報の取得
+            if "service_account" in st.secrets:
+                sa_info = dict(st.secrets["service_account"])
+            elif "service_account_base64" in st.secrets:
+                decoded = base64.b64decode(st.secrets["service_account_base64"])
+                sa_info = json.loads(decoded)
+            else:
+                raise ValueError("Secrets に service_account または service_account_base64 が設定されていません")
 
-        SERVICE_ACCOUNT_KEY = None  # Streamlit環境ではファイルパス不要
-        PROJECT_ID = 'jp-sales-enablement'
-    else:
-        # ローカル環境
-        ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
-        if not ANTHROPIC_API_KEY:
-            raise ValueError("ANTHROPIC_API_KEY 環境変数が設定されていません")
-        SERVICE_ACCOUNT_KEY = os.path.expanduser('~/service-account-key.json')
-        if not os.path.exists(SERVICE_ACCOUNT_KEY):
-            SERVICE_ACCOUNT_KEY = './service-account-key.json'
-        SERVICE_ACCOUNT_INFO = None
-        PROJECT_ID = 'jp-sales-enablement'
-except ImportError:
-    # streamlitがインストールされていない環境
-    ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
-    if not ANTHROPIC_API_KEY:
+            return api_key, None, sa_info, 'jp-sales-enablement'
+    except (ImportError, AttributeError):
+        pass
+
+    # ローカル環境
+    api_key = os.getenv('ANTHROPIC_API_KEY')
+    if not api_key:
         raise ValueError("ANTHROPIC_API_KEY 環境変数が設定されていません")
-    SERVICE_ACCOUNT_KEY = os.path.expanduser('~/service-account-key.json')
-    if not os.path.exists(SERVICE_ACCOUNT_KEY):
-        SERVICE_ACCOUNT_KEY = './service-account-key.json'
-    SERVICE_ACCOUNT_INFO = None
-    PROJECT_ID = 'jp-sales-enablement'
+
+    sa_key = os.path.expanduser('~/service-account-key.json')
+    if not os.path.exists(sa_key):
+        sa_key = './service-account-key.json'
+    if not os.path.exists(sa_key):
+        raise ValueError(f"サービスアカウントキーが見つかりません: {sa_key}")
+
+    return api_key, sa_key, None, 'jp-sales-enablement'
+
+ANTHROPIC_API_KEY, SERVICE_ACCOUNT_KEY, SERVICE_ACCOUNT_INFO, PROJECT_ID = _get_config()
 
 # CV地点の定義
 CV_POINTS = {
