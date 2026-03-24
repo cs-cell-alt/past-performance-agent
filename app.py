@@ -83,8 +83,8 @@ with st.sidebar:
             placeholder="例: GUM 歯周プロケア ペースト"
         )
         advertiser_name = st.text_input(
-            "広告主名 *",
-            placeholder="例: 〇〇株式会社"
+            "広告主名（任意）",
+            placeholder="例: 〇〇株式会社（未入力でもWeb検索で補完されます）"
         )
         agency_name = st.text_input(
             "代理店名",
