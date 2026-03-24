@@ -287,27 +287,28 @@ JSON形式で出力:
 
         return product_info
 
-    def get_creative_info(self, advertiser_name: str, limit: int = 5) -> List[Dict]:
+    def get_creative_info(self, advertiser_name: str, limit: int = 10) -> List[Dict]:
         """
-        cr_rawテーブルから該当案件のクリエイティブ情報を複数取得
+        cr_rawテーブルから該当案件のクリエイティブ情報を複数取得（画像URL付き）
 
         Args:
             advertiser_name: 広告主名
-            limit: 取得件数（デフォルト5件）
+            limit: 取得件数（デフォルト10件、作品別に分けるため多めに）
 
         Returns:
-            クリエイティブ情報のリスト
+            クリエイティブ情報のリスト（画像URL含む）
         """
         query = f"""
         SELECT
             creative_title,
             creative_body_text,
+            creative_image_url,
             SUM(cv) as total_cv
         FROM `{self.project_id}.best_practices_dev.cr_raw`
         WHERE advertiser_name = '{advertiser_name}'
           AND dt >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
           AND creative_title IS NOT NULL
-        GROUP BY creative_title, creative_body_text
+        GROUP BY creative_title, creative_body_text, creative_image_url
         ORDER BY total_cv DESC
         LIMIT {limit}
         """
@@ -319,13 +320,13 @@ JSON形式で出力:
                 creatives.append({
                     'title': row['creative_title'],
                     'body': row['creative_body_text'] or '',
+                    'image_url': row['creative_image_url'] or '',
                     'cv': row['total_cv']
                 })
             return creatives
         except Exception as e:
-            pass
-
-        return []
+            print(f"   ⚠️ クリエイティブ情報の取得に失敗: {e}")
+            return []
 
     def format_creative_list(self, creatives: List[Dict]) -> str:
         """
@@ -343,6 +344,120 @@ JSON形式で出力:
                 lines.append(f"       {body}")
 
         return "\n".join(lines)
+
+    def extract_content_title_from_text(self, text: str) -> Optional[str]:
+        """
+        テキストから作品タイトルを抽出（正規表現）
+        『』「」【】などで囲まれた作品名を探す
+        """
+        import re
+        patterns = [
+            r'『([^』]+)』',
+            r'「([^」]+)」',
+            r'【([^】]+)】',
+            r'＜([^＞]+)＞',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1)
+        return None
+
+    def extract_content_title_from_image(self, image_url: str) -> Optional[str]:
+        """
+        画像から作品タイトルを抽出（Claude Vision使用）
+
+        Args:
+            image_url: 画像URL
+
+        Returns:
+            抽出された作品タイトル（見つからない場合はNone）
+        """
+        if not image_url:
+            return None
+
+        try:
+            import requests
+            import base64
+
+            # 画像をダウンロード
+            response = requests.get(image_url, timeout=10)
+            if response.status_code != 200:
+                return None
+
+            # base64エンコード
+            image_base64 = base64.b64encode(response.content).decode('utf-8')
+
+            # 画像形式を判定
+            content_type = response.headers.get('content-type', 'image/jpeg')
+            if 'png' in content_type:
+                media_type = 'image/png'
+            elif 'webp' in content_type:
+                media_type = 'image/webp'
+            else:
+                media_type = 'image/jpeg'
+
+            # Claude Visionで画像解析
+            message = self.claude.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=200,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": image_base64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": "この広告画像に表示されている漫画・アニメ・ゲーム等の作品タイトルを抽出してください。作品名が見つからない場合は「なし」とだけ答えてください。作品名のみを答えてください。"
+                        }
+                    ],
+                }]
+            )
+
+            result = message.content[0].text.strip()
+            if result and result != "なし":
+                return result
+            return None
+
+        except Exception as e:
+            print(f"   ⚠️ 画像解析エラー ({image_url[:50]}...): {e}")
+            return None
+
+    def get_content_title(self, creative: Dict, use_vision: bool = True) -> Optional[str]:
+        """
+        クリエイティブから作品タイトルを特定
+        1. テキスト（title, body）から抽出を試みる
+        2. 見つからなければ画像から抽出（use_vision=Trueの場合）
+
+        Args:
+            creative: クリエイティブ情報
+            use_vision: 画像解析を使用するか（デフォルトTrue）
+
+        Returns:
+            作品タイトル（見つからない場合はNone）
+        """
+        # まずテキストから探す
+        title = creative.get('title', '')
+        body = creative.get('body', '')
+        text = title + " " + body
+
+        content_title = self.extract_content_title_from_text(text)
+        if content_title:
+            return content_title
+
+        # テキストで見つからなければ画像から（use_vision=Trueの場合）
+        if use_vision:
+            image_url = creative.get('image_url')
+            if image_url:
+                return self.extract_content_title_from_image(image_url)
+
+        return None
 
     def extract_product_name_from_advertiser(self, advertiser_name: str) -> str:
         """
@@ -1102,15 +1217,29 @@ JSON形式で、最も適切なCV地点を1つ返してください。
         print(f"   ✅ 最終選定: {len(final_campaigns)}件")
         print()
 
+        # コンテンツ商材の場合、アカウント×作品単位に分解
+        final_campaigns = self.split_campaigns_by_content(final_campaigns, target_product, min_content_similarity=60)
+
         if final_campaigns:
             print("   【選定された案件TOP5】")
             for i, camp in enumerate(final_campaigns[:5], 1):
                 score = camp.get('similarity_score', 0)
                 is_benchmark = camp.get('is_benchmark', False)
                 benchmark_mark = " 🎯" if is_benchmark else ""
-                print(f"   {i}. {camp['advertiser_name'][:50]}{benchmark_mark}")
-                print(f"      類似度: {score}点, 売上: ¥{camp['total_sales']:,.0f}")
-                print(f"      理由: {camp.get('similarity_reason', '')[:60]}...")
+
+                # 作品単位の場合は display_name を使用
+                display_name = camp.get('display_name', camp['advertiser_name'])
+                print(f"   {i}. {display_name[:70]}{benchmark_mark}")
+
+                # 作品類似度がある場合は表示
+                if 'content_similarity_score' in camp:
+                    content_score = camp['content_similarity_score']
+                    print(f"      アカウント類似度: {score}点, 作品類似度: {content_score}点")
+                    print(f"      売上: ¥{camp['total_sales']:,.0f}")
+                    print(f"      理由: {camp.get('content_similarity_reason', '')[:60]}...")
+                else:
+                    print(f"      類似度: {score}点, 売上: ¥{camp['total_sales']:,.0f}")
+                    print(f"      理由: {camp.get('similarity_reason', '')[:60]}...")
                 print()
 
         return final_campaigns
@@ -1177,6 +1306,161 @@ JSON形式で、最も適切なCV地点を1つ返してください。
 
         return filtered
 
+    def split_campaigns_by_content(self, campaigns: List[Dict], target_product: Dict,
+                                    min_content_similarity: int = 60) -> List[Dict]:
+        """
+        コンテンツ商材（漫画/アニメ）の場合、アカウント×作品単位に分解
+
+        Args:
+            campaigns: アカウント単位のキャンペーンリスト
+            target_product: 検索対象商材
+            min_content_similarity: 最低作品類似度（デフォルト60点）
+
+        Returns:
+            作品単位に分解されたキャンペーンリスト
+        """
+        # コンテンツ商材かどうか判定
+        target_category = target_product.get('category', '').lower()
+        is_content = any(keyword in target_category for keyword in ['漫画', 'アニメ', '動画配信', 'ゲーム', 'コミック'])
+
+        if not is_content:
+            # コンテンツ商材でない場合はそのまま返す
+            return campaigns
+
+        print("\n   【コンテンツ商材検出】アカウント×作品単位に分解します...")
+        print(f"   対象: {len(campaigns)}アカウント")
+        print()
+
+        expanded_campaigns = []
+
+        for campaign in campaigns:
+            advertiser = campaign['advertiser_name']
+            creatives = campaign.get('creative_info', [])
+
+            if not creatives:
+                # クリエイティブがない場合はスキップ
+                continue
+
+            # クリエイティブから作品タイトルを抽出（最大10件）
+            content_titles_map = {}  # {作品タイトル: [creative1, creative2, ...]}
+
+            print(f"   {advertiser[:50]} のクリエイティブ分析中...")
+
+            for i, creative in enumerate(creatives[:10]):  # 最大10件
+                content_title = self.get_content_title(creative, use_vision=True)
+
+                if content_title:
+                    if content_title not in content_titles_map:
+                        content_titles_map[content_title] = []
+                    content_titles_map[content_title].append(creative)
+
+            if not content_titles_map:
+                print(f"      → 作品名が特定できませんでした（スキップ）")
+                continue
+
+            print(f"      → {len(content_titles_map)}作品を検出: {list(content_titles_map.keys())[:3]}")
+
+            # 作品ごとに類似度を判定
+            for content_title, content_creatives in content_titles_map.items():
+                # 作品レベルの類似度判定
+                content_similarity = self._judge_content_similarity(
+                    target_product, content_title, content_creatives
+                )
+
+                if content_similarity['score'] >= min_content_similarity:
+                    # 新しいキャンペーンエントリを作成（作品単位）
+                    content_campaign = campaign.copy()
+                    content_campaign['content_title'] = content_title
+                    content_campaign['content_similarity_score'] = content_similarity['score']
+                    content_campaign['content_similarity_reason'] = content_similarity['reason']
+                    content_campaign['content_creative_count'] = len(content_creatives)
+                    # 表示名を「アカウント名 × 作品名」に変更
+                    content_campaign['display_name'] = f"{advertiser} × {content_title}"
+
+                    expanded_campaigns.append(content_campaign)
+                    print(f"      ✅ {content_title}: {content_similarity['score']}点（採用）")
+                else:
+                    print(f"      ❌ {content_title}: {content_similarity['score']}点（除外）")
+
+        print()
+        print(f"   ✅ 作品単位分解完了: {len(expanded_campaigns)}件")
+        print()
+
+        # 作品類似度でソート
+        expanded_campaigns.sort(key=lambda x: x.get('content_similarity_score', 0), reverse=True)
+
+        return expanded_campaigns
+
+    def _judge_content_similarity(self, target_product: Dict, content_title: str,
+                                   content_creatives: List[Dict]) -> Dict:
+        """
+        作品レベルの類似度を判定
+
+        Args:
+            target_product: 検索対象商材
+            content_title: 作品タイトル
+            content_creatives: その作品のクリエイティブリスト
+
+        Returns:
+            {'score': 85, 'reason': '理由'}
+        """
+        target_category = target_product.get('category', '')
+        target_description = target_product.get('description', '')
+
+        # クリエイティブ情報を整形
+        creative_examples = []
+        for creative in content_creatives[:3]:  # 最大3件
+            title = creative.get('title', '')[:100]
+            creative_examples.append(f"  - {title}")
+        creative_text = "\n".join(creative_examples)
+
+        prompt = f"""あなたは漫画・アニメ・ゲーム等のコンテンツ商材の専門家です。
+以下の2つの作品の類似度を0-100点で評価してください。
+
+# 検索対象の作品
+カテゴリー: {target_category}
+説明: {target_description}
+
+# 候補作品
+作品タイトル: {content_title}
+クリエイティブ例:
+{creative_text}
+
+# 評価基準
+- ジャンル一致を最重視（異世界転生、恋愛、スポーツ、ホラー等）
+- 100点：ほぼ同じ作品またはシリーズ
+- 80-90点：同じジャンルで設定が類似
+- 60-70点：同じジャンルだが設定が異なる
+- 40-50点：ジャンルは違うが同じカテゴリー（漫画、アニメ等）
+- 0-30点：ジャンルが全く異なる
+
+# 出力形式（JSON）
+{{"score": 85, "reason": "評価理由（100文字以内）"}}
+
+JSON形式で出力してください。"""
+
+        try:
+            response = self.claude.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            result_text = response.content[0].text.strip()
+            # JSONをパース
+            import json
+            import re
+            json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                return {'score': result.get('score', 0), 'reason': result.get('reason', '')}
+            else:
+                return {'score': 0, 'reason': 'JSON解析失敗'}
+
+        except Exception as e:
+            print(f"      ⚠️ 作品類似度判定エラー: {e}")
+            return {'score': 0, 'reason': f'判定エラー: {str(e)}'}
+
     def get_industry_benchmarks(self, industry: str, data_period_days: int = 180) -> Dict:
         """業種別ベンチマークデータを取得（v2と同じ）"""
         print("【3】業種別ベンチマーク取得中...")
@@ -1228,7 +1512,7 @@ JSON形式で、最も適切なCV地点を1つ返してください。
             return {}
 
     def create_campaigns_summary_table(self, campaigns: List[Dict], cv_point: str) -> str:
-        """案件一覧を表形式で作成（v3: 類似度スコア付き）"""
+        """案件一覧を表形式で作成（v3: 類似度スコア付き、作品単位対応）"""
         if not campaigns:
             return "（該当案件なし）"
 
@@ -1238,8 +1522,14 @@ JSON形式で、最も適切なCV地点を1つ返してください。
         lines.append("=" * 150)
         lines.append("")
 
+        # コンテンツ商材かどうか判定
+        has_content = any('content_title' in camp for camp in campaigns)
+
         # ヘッダー
-        header = f"{'No':<4} {'広告主名':<35} {'代理店':<20} {'期間':<20} {'売上(円)':<15} {'類似度':<8} {'主CV地点':<15} {'CV数':<10} {'CPA(円)':<12}"
+        if has_content:
+            header = f"{'No':<4} {'広告主名 × 作品名':<45} {'代理店':<20} {'期間':<20} {'売上(円)':<15} {'作品類似度':<10} {'主CV地点':<15} {'CV数':<10}"
+        else:
+            header = f"{'No':<4} {'広告主名':<35} {'代理店':<20} {'期間':<20} {'売上(円)':<15} {'類似度':<8} {'主CV地点':<15} {'CV数':<10} {'CPA(円)':<12}"
         lines.append(header)
         lines.append("-" * 150)
 
@@ -1248,11 +1538,17 @@ JSON形式で、最も適切なCV地点を1つ返してください。
         total_cpa = 0
 
         for i, camp in enumerate(campaigns, 1):
-            adv_name = camp['advertiser_name'][:35]
+            # コンテンツ分割の場合は「アカウント × 作品名」形式で表示
+            if 'content_title' in camp and camp['content_title']:
+                adv_name = f"{camp['advertiser_name'][:20]} × {camp['content_title'][:30]}"[:50]
+                similarity = camp.get('content_similarity_score', camp.get('similarity_score', 0))
+            else:
+                adv_name = camp['advertiser_name'][:35]
+                similarity = camp.get('similarity_score', 0)
+
             agency = camp['agency_name'][:20]
             period = f"{camp.get('start_month', '')}〜{camp.get('end_month', '')}"
             sales = camp['total_sales']
-            similarity = camp.get('similarity_score', 0)
             cv_count = camp.get('main_cv_count', camp['total_cv'])
             cpa = camp.get('main_cv_cpa', camp['avg_cpa'])
             reason = camp.get('similarity_reason', '')
@@ -1285,7 +1581,11 @@ JSON形式で、最も適切なCV地点を1つ返してください。
             # ベンチマークマーク
             benchmark_mark = " 🎯" if is_benchmark else ""
 
-            line = f"{i:<4} {adv_name:<35} {agency:<20} {period:<20} {sales:<15,.0f} {similarity:<8} {display_cv_point:<15} {display_cv_count:<10,} {cpa:<12,.0f}"
+            # コンテンツ分割の場合は列幅を調整
+            if 'content_title' in camp and camp['content_title']:
+                line = f"{i:<4} {adv_name:<45} {agency:<20} {period:<20} {sales:<15,.0f} {similarity:<10} {display_cv_point:<15} {display_cv_count:<10,}"
+            else:
+                line = f"{i:<4} {adv_name:<35} {agency:<20} {period:<20} {sales:<15,.0f} {similarity:<8} {display_cv_point:<15} {display_cv_count:<10,} {cpa:<12,.0f}"
             lines.append(line + benchmark_mark)
 
             # 選定理由を次の行に表示（インデント付き）
