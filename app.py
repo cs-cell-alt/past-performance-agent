@@ -19,7 +19,7 @@ import pandas as pd
 # ────────────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="過去実績検索 v3",
+    page_title="類似実績探索Agent v3",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -52,9 +52,9 @@ if 'search_history' not in st.session_state:
 # ヘッダー
 # ────────────────────────────────────────────────────────────────────
 
-st.title("🔍 過去実績検索Agent v3")
+st.title("🔍 類似実績探索Agent v3")
 st.markdown("""
-**商材内容ベースで類似案件を発掘する、次世代の過去実績検索システム**
+**商材内容ベースで類似案件を発掘する、次世代の類似実績探索システム**
 
 v3の新機能:
 - ✨ 商材内容ベースの類似判定（業種を超えた検索）
@@ -77,8 +77,8 @@ with st.sidebar:
     with st.form("hearing_form"):
         st.subheader("基本情報")
         project_name = st.text_input(
-            "案件名 *",
-            placeholder="例: 2026年春キャンペーン"
+            "商材・サービス名 *",
+            placeholder="例: GUM 歯周プロケア ペースト"
         )
         advertiser_name = st.text_input(
             "広告主名 *",

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-① 過去実績検索Agent v3
+① 類似実績探索Agent v3
 
 【v3の改善内容】
 - 業種を特定しすぎない検索（複数業種または業種横断）
@@ -104,14 +104,14 @@ class PerformanceSearchResult:
 
 
 class PastPerformanceAgentV3:
-    """過去実績検索Agent v3"""
+    """類似実績探索Agent v3"""
 
     def __init__(self, anthropic_api_key: str = None,
                  bq_project_id: str = None,
                  service_account_key: str = None):
         """初期化"""
         print("=" * 80)
-        print("🔍 過去実績検索Agent v3 初期化中...")
+        print("🔍 類似実績探索Agent v3 初期化中...")
         print("=" * 80)
 
         # 認証情報を取得（遅延評価）
