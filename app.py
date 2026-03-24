@@ -30,7 +30,17 @@ st.set_page_config(
 # ────────────────────────────────────────────────────────────────────
 
 if 'agent' not in st.session_state:
-    st.session_state.agent = PastPerformanceAgentV3()
+    # Secrets から API キーを取得
+    api_key = st.secrets.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        st.error("❌ Secrets に ANTHROPIC_API_KEY が設定されていません")
+        st.stop()
+
+    try:
+        st.session_state.agent = PastPerformanceAgentV3()
+    except Exception as e:
+        st.error(f"❌ Agent の初期化に失敗しました: {e}")
+        st.stop()
 
 if 'search_result' not in st.session_state:
     st.session_state.search_result = None
