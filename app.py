@@ -158,8 +158,8 @@ with st.sidebar:
 
 if submitted:
     # バリデーション
-    if not project_name or not advertiser_name or not q01:
-        st.error("❌ 必須項目を入力してください（案件名、広告主名、商材内容）")
+    if not project_name or not q01:
+        st.error("❌ 必須項目を入力してください（商材・サービス名、重点施策・商材内容）")
     else:
         # ヒアリングデータ構築
         hearing_data = {
